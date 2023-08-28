@@ -30,7 +30,7 @@ type StorageManager struct {
 }
 
 func createStorageManager(filePath string) (*StorageManager, error) {
-	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0644)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, os.ModePerm)
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +57,7 @@ func NewStorageManager(filePath, walFilePath string) (*StorageManager, error) {
 	if err != nil {
 		return nil, err
 	}
+	
 	sm.wal = wal // Assign WAL to the storage manager
 
 	// Recover records from WAL if they don't already exist in the database
@@ -109,11 +110,12 @@ func (sm *StorageManager) WriteBlock(blockID int64, data []byte) error {
 	return nil
 }
 
-func (sm *StorageManager) close() {
+func (sm *StorageManager) Close() {
 	err := sm.file.Close()
 	if err != nil {
 		return
 	}
+	println("Closing WAL")
 	sm.wal.Close()
 }
 

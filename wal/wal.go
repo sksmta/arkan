@@ -15,10 +15,12 @@ type WAL struct {
 }
 
 func NewWAL(filePath string) (*WAL, error) {
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, os.ModePerm)
+
 	if err != nil {
 		return nil, err
 	}
+
 	return &WAL{
 		file: file,
 	}, nil
