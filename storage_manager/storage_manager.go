@@ -1,9 +1,9 @@
 package storage_manager
 
 import (
+	"crypto/rand"
 	_ "fmt"
 	"os"
-	"sync"
 
 	c "github.com/sksmta/arkan/cache"
 	wa "github.com/sksmta/arkan/wal"
@@ -12,21 +12,13 @@ import (
 const (
 	blockSize    = 4096
 	maxCacheSize = 100
+
+	keySize = 32
 )
 
 type Record struct {
 	BlockID int64
 	Data    []byte
-}
-
-type StorageManager struct {
-	file          *os.File
-	bufferPool    map[int64][]byte
-	bufferSize    int
-	cache         *c.LRUCache
-	writeMutex    sync.Mutex
-	readWriteLock sync.RWMutex
-	wal           *wa.WAL
 }
 
 func createStorageManager(filePath string) (*StorageManager, error) {
@@ -37,11 +29,18 @@ func createStorageManager(filePath string) (*StorageManager, error) {
 
 	cache := c.NewLRUCache(maxCacheSize)
 
+	// Generate a new keyString
+	key := make([]byte, keySize)
+	_, err = rand.Read(key)
+	if err != nil {
+		return nil, err
+	}
+
 	return &StorageManager{
-		file:       file,
-		bufferPool: make(map[int64][]byte),
-		bufferSize: blockSize,
-		cache:      cache,
+		file:          file,
+		bufferPool:    make(map[int64][]byte),
+		bufferSize:    blockSize,
+		cache:         cache,
 	}, nil
 }
 
@@ -52,12 +51,24 @@ func NewStorageManager(filePath, walFilePath string) (*StorageManager, error) {
 		return nil, err
 	}
 
+	// Initialize block ID manager with the last used block ID + 1
+	lastUsedBlockID, err := sm.getLastUsedBlockID()
+	if err != nil {
+		return nil, err
+	}
+	sm.blockIDManager = NewBlockIDManager(lastUsedBlockID + 1)
+
+	// Generate encryption key
+	if err := sm.generateEncryptionKey(); err != nil {
+		return nil, err
+	}
+
 	// Open the WAL and read records for recovery
 	wal, err := wa.NewWAL(walFilePath)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	sm.wal = wal // Assign WAL to the storage manager
 
 	// Recover records from WAL if they don't already exist in the database
@@ -74,7 +85,12 @@ func (sm *StorageManager) ReadBlock(blockID int64) ([]byte, error) {
 
 	cachedData, ok := sm.cache.Get(blockID)
 	if ok {
-		return cachedData, nil
+		// Decrypt cached data before returning
+		decryptedData, err := sm.DecryptData(cachedData)
+		if err != nil {
+			return nil, err
+		}
+		return decryptedData, nil
 	}
 
 	data := make([]byte, sm.bufferSize)
@@ -83,26 +99,40 @@ func (sm *StorageManager) ReadBlock(blockID int64) ([]byte, error) {
 		return nil, err
 	}
 
-	sm.cache.Add(blockID, data)
-	return data, nil
+	// Decrypt data before adding to cache
+	decryptedData, err := sm.DecryptData(data)
+	if err != nil {
+		return nil, err
+	}
+
+	sm.cache.Add(blockID, decryptedData)
+	return decryptedData, nil
 }
 
-func (sm *StorageManager) WriteBlock(blockID int64, data []byte) error {
+func (sm *StorageManager) WriteBlock(data []byte) error {
 	sm.writeMutex.Lock()
 	defer sm.writeMutex.Unlock()
 
-	recordData := serializeRecord(blockID, data)
+	blockID := sm.blockIDManager.GetNextID()
+
+	// Encrypt data before writing
+	encryptedData, err := sm.EncryptData(data)
+	if err != nil {
+		return err
+	}
+
+	recordData := serializeRecord(blockID, encryptedData)
 
 	// Write to WAL
 	if err := sm.wal.WriteRecord(recordData); err != nil {
 		return err
 	}
 
-	// Write to in-memory cache
-	sm.cache.Add(blockID, data)
+	// Write to in-memory cache (store encrypted data)
+	sm.cache.Add(blockID, encryptedData)
 
-	// Write to file
-	_, err := sm.file.WriteAt(recordData, blockID*int64(sm.bufferSize))
+	// Write to file (store encrypted data)
+	_, err = sm.file.WriteAt(recordData, blockID*int64(sm.bufferSize))
 	if err != nil {
 		return err
 	}
@@ -149,11 +179,21 @@ func (sm *StorageManager) recoverFromWAL() error {
 	}
 
 	for _, recordData := range walRecords {
-		blockID, data := wa.DeserializeRecord(recordData)
-		if err := sm.WriteBlock(blockID, data); err != nil {
+		_, data := wa.DeserializeRecord(recordData)
+		if err := sm.WriteBlock(data); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+func (sm *StorageManager) generateEncryptionKey() error {
+	key := make([]byte, 32) // You can adjust the key size as needed
+	_, err := rand.Read(key)
+	if err != nil {
+		return err
+	}
+	sm.encryptionKey = key
 	return nil
 }

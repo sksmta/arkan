@@ -13,7 +13,7 @@ func TestStorageManager_WriteAndReadBlock(t *testing.T) {
 
 	// Write a block
 	data := []byte("Hello, World!")
-	err = sm.WriteBlock(0, data)
+	err = sm.WriteBlock(data)
 	if err != nil {
 		t.Errorf("Error writing block: %v", err)
 	}
